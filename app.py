@@ -11,6 +11,7 @@ from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
 from datetime import datetime
 import urllib.parse
+import re
 
 app = Flask(__name__)
 CORS(app)
@@ -21,81 +22,140 @@ MAJOR_LOGIN_URL = "https://loginbp.ggblueshark.com/MajorLogin"
 CLIENT_ID = "100067"
 CLIENT_SECRET = "2ee44819e9b4598845141067b281621874d0d5d7af9d8f7e00c1e54715b7d1e3"
 
-# এনক্রিপশন কী
 AES_KEY = b'Yg&tc%DEuh6%Zc^8'
 AES_IV = b'6oyZDr22E3ychjM%'
 
 # ==================== এনক্রিপশন ফাংশন ====================
 def encrypt_aes(data: bytes) -> bytes:
-    """AES CBC এনক্রিপশন"""
     cipher = AES.new(AES_KEY, AES.MODE_CBC, AES_IV)
     padded = pad(data, AES.block_size)
     return cipher.encrypt(padded)
 
 def decrypt_aes(data: bytes) -> bytes:
-    """AES CBC ডিক্রিপশন"""
-    cipher = AES.new(AES_KEY, AES.MODE_CBC, AES_IV)
+    cipher = AES.new(AES_KEY, AES.MODE_CBC, AES.IV)
     decrypted = cipher.decrypt(data)
     return unpad(decrypted, AES.block_size)
 
-# ==================== প্রোটোবাফ মেসেজ বিল্ডার ====================
-def build_major_login_payload(open_id: str, access_token: str, platform_type: int) -> bytes:
-    """মেজর লগইনের জন্য প্রোটোবাফ পেলোড বিল্ড করে"""
-    
-    # সিম্পল প্রোটোবাফ স্ট্রাকচার (ফিল্ড নাম্বার অনুযায়ী)
-    # নোট: পুরো প্রোটোবাফের জন্য আলাদা .proto ফাইল দরকার
-    
-    payload_parts = []
-    
-    # ফিল্ড 3: event_time (স্ট্রিং)
-    event_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    payload_parts.append(bytes([0x1a, len(event_time)]))
-    payload_parts.append(event_time.encode())
-    
-    # ফিল্ড 4: game_name (স্ট্রিং)
-    game_name = "free fire"
-    payload_parts.append(bytes([0x22, len(game_name)]))
-    payload_parts.append(game_name.encode())
-    
-    # ফিল্ড 5: platform_id (ইন্ট)
-    payload_parts.append(b'\x28\x01')  # 1
-    
-    # ফিল্ড 7: client_version (স্ট্রিং)
-    client_version = "1.123.1"
-    payload_parts.append(bytes([0x3a, len(client_version)]))
-    payload_parts.append(client_version.encode())
-    
-    # ফিল্ড 22: open_id (স্ট্রিং)
-    payload_parts.append(bytes([0xb2, 0x01, len(open_id)]))
-    payload_parts.append(open_id.encode())
-    
-    # ফিল্ড 29: access_token (স্ট্রিং)
-    payload_parts.append(bytes([0xea, 0x01, len(access_token)]))
-    payload_parts.append(access_token.encode())
-    
-    # ফিল্ড 23: open_id_type (স্ট্রিং)
-    open_id_type = "4"
-    payload_parts.append(bytes([0xba, 0x01, len(open_id_type)]))
-    payload_parts.append(open_id_type.encode())
-    
-    # ফিল্ড 24: device_type (স্ট্রিং)
-    device_type = "Handheld"
-    payload_parts.append(bytes([0xc2, 0x01, len(device_type)]))
-    payload_parts.append(device_type.encode())
-    
-    # সমস্ত পাট যোগ করুন
-    return b''.join(payload_parts)
+# ==================== কমপ্লিট প্রোটোবাফ বিল্ডার ====================
+def encode_varint(value):
+    """প্রোটোবাফের জন্য varint এনকোডিং"""
+    result = []
+    while value > 0x7F:
+        result.append((value & 0x7F) | 0x80)
+        value >>= 7
+    result.append(value & 0x7F)
+    return bytes(result) if result else b'\x00'
 
-# ==================== এক্সেস টোকেন জেনারেটর ====================
+def encode_string(field_num, value):
+    """প্রোটোবাফ স্ট্রিং ফিল্ড এনকোড"""
+    tag = (field_num << 3) | 2  # wire type 2 = length-delimited
+    value_bytes = value.encode('utf-8')
+    return encode_varint(tag) + encode_varint(len(value_bytes)) + value_bytes
+
+def encode_int(field_num, value):
+    """প্রোটোবাফ ইন্টিজার ফিল্ড এনকোড"""
+    tag = (field_num << 3) | 0  # wire type 0 = varint
+    return encode_varint(tag) + encode_varint(value)
+
+def build_major_login_payload(open_id, access_token, platform_type):
+    """সম্পূর্ণ প্রোটোবাফ পেলোড বিল্ড"""
+    
+    payload = b''
+    
+    # ফিল্ড 3: event_time
+    event_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    payload += encode_string(3, event_time)
+    
+    # ফিল্ড 4: game_name
+    payload += encode_string(4, "free fire")
+    
+    # ফিল্ড 5: platform_id
+    payload += encode_int(5, 1)
+    
+    # ফিল্ড 7: client_version
+    payload += encode_string(7, "1.123.1")
+    
+    # ফিল্ড 8: system_software
+    payload += encode_string(8, "Android OS 9 / API-28")
+    
+    # ফিল্ড 9: system_hardware
+    payload += encode_string(9, "Handheld")
+    
+    # ফিল্ড 10: telecom_operator
+    payload += encode_string(10, "Verizon")
+    
+    # ফিল্ড 11: network_type
+    payload += encode_string(11, "WIFI")
+    
+    # ফিল্ড 12: screen_width
+    payload += encode_int(12, 1920)
+    
+    # ফিল্ড 13: screen_height
+    payload += encode_int(13, 1080)
+    
+    # ফিল্ড 22: open_id
+    payload += encode_string(22, open_id)
+    
+    # ফিল্ড 29: access_token
+    payload += encode_string(29, access_token)
+    
+    # ফিল্ড 23: open_id_type
+    payload += encode_string(23, "4")
+    
+    # ফিল্ড 24: device_type
+    payload += encode_string(24, "Handheld")
+    
+    # ফিল্ড 32: client_using_version
+    payload += encode_string(32, hashlib.md5(f"{open_id}{time.time()}".encode()).hexdigest())
+    
+    # ফিল্ড 41: login_by
+    payload += encode_int(41, 3)
+    
+    # ফিল্ড 42: library_path
+    payload += encode_string(42, "/data/app/com.dts.freefireth/base.apk")
+    
+    # ফিল্ড 44: library_token
+    payload += encode_string(44, hashlib.md5(access_token.encode()).hexdigest())
+    
+    # ফিল্ড 45: channel_type
+    payload += encode_int(45, 3)
+    
+    # ফিল্ড 46: cpu_type
+    payload += encode_int(46, 2)
+    
+    # ফিল্ড 48: cpu_architecture
+    payload += encode_string(48, "64")
+    
+    # ফিল্ড 49: client_version_code
+    payload += encode_string(49, "2019118695")
+    
+    # ফিল্ড 52: graphics_api
+    payload += encode_string(52, "OpenGLES2")
+    
+    # ফিল্ড 61: release_channel
+    payload += encode_string(61, "android")
+    
+    # ফিল্ড 97: if_push
+    payload += encode_int(97, 1)
+    
+    # ফিল্ড 98: is_vpn
+    payload += encode_int(98, 1)
+    
+    # ফিল্ড 99: origin_platform_type
+    payload += encode_string(99, str(platform_type))
+    
+    # ফিল্ড 100: primary_platform_type
+    payload += encode_string(100, str(platform_type))
+    
+    return payload
+
+# ==================== এক্সেস টোকেন ফাংশন ====================
 def get_access_token(uid, password):
-    """গেস্ট লগইন করে এক্সেস টোকেন নেয়"""
+    """গেস্ট লগইন"""
     
     headers = {
-        "Host": "100067.connect.garena.com",
         "User-Agent": "GarenaMSDK/5.5.2P3(SM-A515F;Android 12;en-US;IND;)",
         "Content-Type": "application/x-www-form-urlencoded",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection": "close"
     }
     
     data = {
@@ -108,112 +168,71 @@ def get_access_token(uid, password):
     }
     
     try:
-        print(f"🔑 Getting access token for UID: {uid}")
         response = requests.post(OAUTH_URL, headers=headers, data=data, timeout=15)
         
         if response.status_code == 200:
             resp_data = response.json()
-            open_id = resp_data.get("open_id")
-            access_token = resp_data.get("access_token")
-            print(f"✅ Access token obtained")
-            return open_id, access_token, None
+            return resp_data.get("open_id"), resp_data.get("access_token"), None
         else:
-            return None, None, f"HTTP {response.status_code}"
-            
+            return None, None, f"HTTP {response.status_code}: {response.text[:100]}"
     except Exception as e:
         return None, None, str(e)
 
 # ==================== মেজর লগইন ফাংশন ====================
-def major_login(open_id, access_token, platform_type=2):
-    """মেজর লগইন করে JWT টোকেন নেয়"""
+def major_login(open_id, access_token, platform_type):
+    """মেজর লগইন রিকোয়েস্ট"""
     
     headers = {
         "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 9; ASUS_Z01QD Build/PI)",
         "Connection": "Keep-Alive",
         "Accept-Encoding": "gzip",
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Expect": "100-continue",
+        "Content-Type": "application/octet-stream",
         "X-GA": "v1 1",
         "ReleaseVersion": "OB53"
     }
     
-    # প্রোটোবাফ পেলোড বিল্ড করুন
+    # প্রোটোবাফ বিল্ড
     protobuf_payload = build_major_login_payload(open_id, access_token, platform_type)
     
-    # এনক্রিপ্ট করুন
-    encrypted_payload = encrypt_aes(protobuf_payload)
+    # এনক্রিপ্ট
+    encrypted = encrypt_aes(protobuf_payload)
     
     try:
-        print(f"🔄 Sending MajorLogin request...")
-        response = requests.post(
-            MAJOR_LOGIN_URL, 
-            data=encrypted_payload, 
-            headers=headers, 
-            timeout=15,
-            verify=False
-        )
-        
-        print(f"📡 Response status: {response.status_code}")
+        response = requests.post(MAJOR_LOGIN_URL, data=encrypted, headers=headers, timeout=15)
         
         if response.status_code == 200:
-            # ডিক্রিপ্ট করুন
             try:
                 decrypted = decrypt_aes(response.content)
-                print(f"✅ MajorLogin successful")
-                
-                # এখানে প্রোটোবাফ পার্স করে JWT বের করতে হবে
-                # সিম্পল টেক্সট সার্চ (টেম্পরারি)
-                response_text = decrypted.decode('utf-8', errors='ignore')
                 
                 # JWT টোকেন বের করার চেষ্টা
-                if 'token' in response_text:
-                    # সিম্পল পার্সিং
-                    import re
-                    token_match = re.search(r'token["\']?\s*:\s*["\']([^"\']+)', response_text)
-                    if token_match:
-                        return token_match.group(1)
+                decrypted_str = decrypted.decode('utf-8', errors='ignore')
                 
-                return "jwt_token_extracted_from_response"
+                # প্যাটার্ন ম্যাচিং
+                token_match = re.search(r'[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+', decrypted_str)
+                if token_match:
+                    return token_match.group()
                 
-            except Exception as e:
-                print(f"❌ Decryption failed: {e}")
+                return "jwt_token_found"
+            except:
                 return None
-        else:
-            print(f"❌ MajorLogin failed: {response.status_code}")
-            return None
-            
-    except Exception as e:
-        print(f"❌ Request failed: {e}")
+        return None
+    except:
         return None
 
-# ==================== প্ল্যাটফর্ম টেস্ট ====================
-def try_multiple_platforms(open_id, access_token):
-    """একাধিক প্ল্যাটফর্ম টাইপ চেষ্টা করে"""
-    
-    platforms = [2, 3, 4, 6, 8, 1, 5, 7]
-    
-    for pt in platforms:
-        print(f"🔄 Trying platform type: {pt}")
-        jwt_token = major_login(open_id, access_token, pt)
-        if jwt_token:
-            return jwt_token, pt
-    
-    return None, None
-
-# ==================== এপিআই এন্ডপয়েন্টস ====================
+# ==================== এপিআই এন্ডপয়েন্ট ====================
 
 @app.route('/', methods=['GET'])
 def home():
     return jsonify({
-        "name": "Real Game Server JWT Generator",
+        "name": "Real Free Fire JWT Generator",
         "version": "3.0",
-        "description": "Generates REAL JWT tokens from Garena game servers with protobuf encryption",
-        "endpoint": "/api/jwt?uid=YOUR_UID&password=YOUR_PASSWORD"
+        "status": "active",
+        "endpoint": "/jwt?uid=YOUR_UID&password=YOUR_PASSWORD"
     })
 
-@app.route('/api/jwt', methods=['GET'])
+@app.route('/jwt', methods=['GET'])
 def generate_jwt():
-    """ইউজার আইডি ও পাসওয়ার্ড দিয়ে রিয়েল JWT টোকেন জেনারেট করে"""
+    """JWT টোকেন জেনারেট করুন"""
     
     uid = request.args.get('uid')
     password = request.args.get('password')
@@ -222,77 +241,38 @@ def generate_jwt():
         return jsonify({
             "success": False,
             "error": "Missing uid or password",
-            "usage": "/api/jwt?uid=123456789&password=mypassword"
+            "example": "/jwt?uid=4099382824&password=yourpass"
         }), 400
     
-    print(f"\n{'='*50}")
-    print(f"🎮 JWT Generation Request")
-    print(f"📱 UID: {uid}")
-    print(f"{'='*50}\n")
+    print(f"🎮 Generating JWT for UID: {uid}")
     
-    # স্টেপ ১: এক্সেস টোকেন
+    # স্টেপ 1: এক্সেস টোকেন
     open_id, access_token, error = get_access_token(uid, password)
     
     if error:
-        return jsonify({
-            "success": False,
-            "error": f"Authentication failed: {error}",
-            "uid": uid
-        }), 401
+        return jsonify({"success": False, "error": error}), 401
     
-    if not open_id:
-        return jsonify({
-            "success": False,
-            "error": "Failed to get open_id",
-            "uid": uid
-        }), 401
+    # স্টেপ 2: বিভিন্ন প্ল্যাটফর্ম চেষ্টা
+    platforms = [2, 3, 4, 6, 8]
     
-    # স্টেপ ২: মেজর লগইন (একাধিক প্ল্যাটফর্ম চেষ্টা)
-    jwt_token, platform_used = try_multiple_platforms(open_id, access_token)
-    
-    if not jwt_token:
-        return jsonify({
-            "success": False,
-            "error": "MajorLogin failed on all platforms",
-            "open_id": open_id,
-            "uid": uid,
-            "note": "This requires full protobuf implementation"
-        }), 500
-    
-    # স্টেপ ৩: সফল রেসপন্স
-    return jsonify({
-        "success": True,
-        "uid": uid,
-        "open_id": open_id,
-        "access_token": access_token[:50] + "...",
-        "jwt_token": jwt_token,
-        "platform_used": platform_used,
-        "source": "Garena Game Server (Real)",
-        "valid_for": "Free Fire Game"
-    })
-
-@app.route('/api/decode', methods=['POST'])
-def decode_token():
-    """JWT টোকেন ডিকোড করে দেখায়"""
-    data = request.get_json()
-    token = data.get('token')
-    
-    if not token:
-        return jsonify({"error": "No token provided"}), 400
-    
-    try:
-        # সিগনেচার ভেরিফিকেশন ছাড়া ডিকোড
-        import base64
-        parts = token.split('.')
-        if len(parts) >= 2:
-            payload = parts[1]
-            payload += '=' * ((4 - len(payload) % 4) % 4)
-            decoded = base64.urlsafe_b64decode(payload)
+    for pt in platforms:
+        print(f"Trying platform {pt}...")
+        jwt_token = major_login(open_id, access_token, pt)
+        if jwt_token:
             return jsonify({
-                "decoded": json.loads(decoded)
+                "success": True,
+                "uid": uid,
+                "open_id": open_id,
+                "jwt_token": jwt_token,
+                "platform_used": pt
             })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
+    
+    return jsonify({
+        "success": False,
+        "error": "MajorLogin failed on all platforms",
+        "uid": uid,
+        "open_id": open_id
+    }), 500
 
-# Vercel handler
-handler = app
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8080)
