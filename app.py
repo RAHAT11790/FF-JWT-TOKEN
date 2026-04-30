@@ -1,371 +1,121 @@
 from flask import Flask, request, jsonify
-from flask_cors import CORS
-import requests
-import json
-import hashlib
-import time
-import uuid
-import re
-import base64
 from datetime import datetime
+import requests
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad
+import urllib3
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = Flask(__name__)
-CORS(app)
 
-# ==================== কনফিগারেশন ====================
-CLIENT_ID = "100067"
-CLIENT_SECRET = "2ee44819e9b4598845141067b281621874d0d5d7af9d8f7e00c1e54715b7d1e3"
+def encrypt_api(plain_text):
+    plain_text = bytes.fromhex(plain_text)
+    key = bytes([89, 103, 38, 116, 99, 37, 68, 69, 117, 104, 54, 37, 90, 99, 94, 56])
+    iv = bytes([54, 111, 121, 90, 68, 114, 50, 50, 69, 51, 121, 99, 104, 106, 77, 37])
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    cipher_text = cipher.encrypt(pad(plain_text, AES.block_size))
+    return cipher_text.hex()
 
-# এন্ডপয়েন্টস
-OAUTH_TOKEN_URL = "https://100067.connect.garena.com/oauth/guest/token/grant"
-OAUTH_AUTH_URL = "https://auth.garena.com/oauth/login"
-TOKEN_EXCHANGE_URL = "https://connect.garena.com/oauth/token"
-
-# ==================== ১. গেস্ট লগইন (UID + পাসওয়ার্ড) ====================
-def guest_login(uid, password):
-    """সরাসরি UID ও পাসওয়ার্ড দিয়ে গেস্ট লগইন"""
+def TOKEN_MAKER(OLD_ACCESS_TOKEN, NEW_ACCESS_TOKEN, OLD_OPEN_ID, NEW_OPEN_ID, uid):
+    now = datetime.now()
+    now = str(now)[:len(str(now)) - 7]
+    
+    data = bytes.fromhex('1a13323032352d30372d33302031313a30323a3531220966726565206669726528013a07312e3131342e32422c416e64726f6964204f537320372e312e32202f204150492d323320284e32473438482f373030323530323234294a0848616e6468656c645207416e64726f69645a045749464960c00c68840772033332307a1f41524d7637205646507633204e454f4e20564d48207c2032343635207c203480019a1b8a010f416472656e6f2028544d292036343092010d4f70656e474c20455320332e319a012b476f6f676c657c31663361643662372d636562342d343934622d383730622d623164616364373230393131a2010c3139372e312e31322e313335aa0102656eb201203939366136323964626364623339363462653662363937386635643831346462ba010134c2010848616e6468656c64ca011073616d73756e6720534d2d473935354eea014066663930633037656239383135616633306134336234613966363031393531366530653463373033623434303932353136643064656661346365663531663261f00101ca0207416e64726f6964d2020457494649ca03203734323862323533646566633136343031386336303461316562626665626466e003daa907e803899b07f003bf0ff803ae088004999b078804daa9079004999b079804daa907c80403d204262f646174612f6170702f636f6d2e6474732e667265656669726574682d312f6c69622f61726de00401ea044832303837663631633139663537663261663465376665666630623234643964397c2f646174612f6170702f636f6d2e6474732e667265656669726574682d312f626173652e61706bf00403f804018a050233329a050a32303139313138363933a80503b205094f70656e474c455332b805ff7fc00504e005dac901ea0507616e64726f6964f2055c4b71734854394748625876574c6668437950416c52526873626d43676542557562555551317375746d525536634e30524f3745513141486e496474385963784d614c575437636d4851322b7374745279377830663935542b6456593d8806019006019a060134a2060134b2061e40001147550d0c074f530b4d5c584d57416657545a065f2a091d6a0d5033')
+    
+    data = data.replace(OLD_OPEN_ID.encode(), NEW_OPEN_ID.encode())
+    data = data.replace(OLD_ACCESS_TOKEN.encode(), NEW_ACCESS_TOKEN.encode())
+    
+    d = encrypt_api(data.hex())
+    Final_Payload = bytes.fromhex(d)
     
     headers = {
-        "User-Agent": "GarenaMSDK/5.5.2P3(SM-A515F;Android 12;en-US;IND;)",
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Host": "100067.connect.garena.com"
+        'X-Unity-Version': '2018.4.11f1',
+        'ReleaseVersion': 'OB53',
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'X-GA': 'v1 1',
+        'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInN2ciI6IjEiLCJ0eXAiOiJKV1QifQ.eyJhY2NvdW50X2lkIjo5MjgwODkyMDE4LCJuaWNrbmFtZSI6IkJZVEV2R3QwIiwibm90aV9yZWdpb24iOiJNRSIsImxvY2tfcmVnaW9uIjoiTUUiLCJleHRlcm5hbF9pZCI6ImYzNGQyMjg0ZWJkYmFkNTkzNWJjOGI1NTZjMjY0ZmMwIiwiZXh0ZXJuYWxfdHlwZSI6NCwicGxhdF9pZCI6MCwiY2xpZW50X3ZlcnNpb24iOiIxLjEwNS41IiwiZW11bGF0b3Jfc2NvcmUiOjAsImlzX2VtdWxhdG9yIjpmYWxzZSwiY291bnRyeV9jb2RlIjoiRUciLCJleHRlcm5hbF91aWQiOjMyMzQ1NDE1OTEsInJlZ19hdmF0YXIiOjEwMjAwMDAwNSwic291cmNlIjoyLCJsb2NrX3JlZ2lvbl90aW1lIjoxNzE0NjYyMzcyLCJjbGllbnRfdHlwZSI6MSwic2lnbmF0dXJlX21kNSI6IiIsInVzaW5nX3ZlcnNpb24iOjEsInJlbGVhc2VfY2hhbm5lbCI6ImlvcyIsInJlbGVhc2VfdmVyc2lvbiI6Ik9CNDUiLCJleHAiOjE3MjIwNTkxMjF9.yYQZX0GeBMeBtMLhyCjSV0Q3e0jAqhnMZd3XOs6Ldk4',
+        'User-Agent': 'Dalvik/2.1.0 (Linux; U; Android 7.1.2; ASUS_Z01QD Build/QKQ1.190825.002)',
+        'Host': 'loginbp.common.ggbluefox.com',
+        'Connection': 'Keep-Alive',
+        'Accept-Encoding': 'gzip'
     }
     
-    data = {
-        "uid": uid,
-        "password": password,
-        "response_type": "token",
-        "client_type": "2",
-        "client_secret": CLIENT_SECRET,
-        "client_id": CLIENT_ID
-    }
+    URL = "https://loginbp.common.ggbluefox.com/MajorLogin"
+    RESPONSE = requests.post(URL, headers=headers, data=Final_Payload, verify=False)
     
-    try:
-        response = requests.post(OAUTH_TOKEN_URL, headers=headers, data=data, timeout=15)
-        
-        if response.status_code == 200:
-            resp_data = response.json()
-            return {
-                "success": True,
-                "open_id": resp_data.get("open_id"),
-                "access_token": resp_data.get("access_token"),
-                "token_type": resp_data.get("token_type", "Bearer"),
-                "expires_in": resp_data.get("expires_in", 3600)
-            }
-        else:
-            return {
-                "success": False,
-                "error": f"HTTP {response.status_code}: {response.text[:200]}"
-            }
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-# ==================== ২. অথোরাইজেশন কোড জেনারেট (ওয়েব লগইন) ====================
-def get_authorization_code(open_id, access_token):
-    """এক্সেস টোকেন থেকে অথোরাইজেশন কোড জেনারেট"""
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Authorization": f"Bearer {access_token}"
-    }
-    
-    params = {
-        "response_type": "code",
-        "prompt": "login",
-        "redirect_uri": "https://reward.ff.garena.com/en/",
-        "client_id": CLIENT_ID,
-        "all_platforms": "1",
-        "platform": "8"
-    }
-    
-    try:
-        # সিমুলেটেড - রিয়েল ইমপ্লিমেন্টেশনে ব্রাউজার অটোমেশন দরকার
-        # এই অংশটি সিম্পলিফাইড
-        return {
-            "success": True,
-            "code": f"auto_code_{int(time.time())}_{open_id[:8]}"
-        }
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-# ==================== ৩. কোড থেকে JWT টোকেন কনভার্ট ====================
-def exchange_code_for_jwt(authorization_code):
-    """অথোরাইজেশন কোডকে JWT টোকেনে কনভার্ট করে"""
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Content-Type": "application/x-www-form-urlencoded"
-    }
-    
-    data = {
-        "grant_type": "authorization_code",
-        "code": authorization_code,
-        "redirect_uri": "https://reward.ff.garena.com/en/",
-        "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET
-    }
-    
-    try:
-        response = requests.post(TOKEN_EXCHANGE_URL, headers=headers, data=data, timeout=15)
-        
-        if response.status_code == 200:
-            resp_data = response.json()
-            
-            # JWT টোকেন বের করুন
-            jwt_token = resp_data.get("access_token") or resp_data.get("id_token") or resp_data.get("token")
-            
-            return {
-                "success": True,
-                "jwt_token": jwt_token,
-                "refresh_token": resp_data.get("refresh_token"),
-                "expires_in": resp_data.get("expires_in", 3600)
-            }
-        else:
-            return {"success": False, "error": f"HTTP {response.status_code}"}
-            
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-# ==================== ৪. সরাসরি মেজর লগইন থেকে JWT ====================
-def major_login_jwt(open_id, access_token):
-    """মেজর লগইন এন্ডপয়েন্ট থেকে সরাসরি JWT নেয়"""
-    
-    url = "https://loginbp.ggblueshark.com/MajorLogin"
-    
-    headers = {
-        "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 9; ASUS_Z01QD Build/PI)",
-        "Connection": "Keep-Alive",
-        "Accept-Encoding": "gzip",
-        "Content-Type": "application/json",
-        "X-GA": "v1 1",
-        "ReleaseVersion": "OB53"
-    }
-    
-    payload = {
-        "open_id": open_id,
-        "access_token": access_token,
-        "platform_type": 2,
-        "client_version": "1.123.1",
-        "device_id": str(uuid.uuid4()),
-        "login_type": "guest"
-    }
-    
-    try:
-        response = requests.post(url, json=payload, headers=headers, timeout=15)
-        
-        if response.status_code == 200:
-            # JSON রেসপন্স থেকে JWT বের করুন
-            try:
-                data = response.json()
-                jwt_token = data.get('token') or data.get('jwt') or data.get('access_token')
-                
-                if jwt_token:
-                    return {"success": True, "jwt_token": jwt_token}
-            except:
-                pass
-            
-            # টেক্সট থেকে JWT প্যাটার্ন খুঁজুন
-            text = response.text
-            jwt_pattern = r'eyJ[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+'
-            match = re.search(jwt_pattern, text)
-            
-            if match:
-                return {"success": True, "jwt_token": match.group()}
-        
-        return {"success": False, "error": f"HTTP {response.status_code}"}
-        
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-# ==================== ৫. মেইন ফাংশন (একবারেই সব) ====================
-def auto_jwt_generator(uid, password):
-    """UID ও পাসওয়ার্ড দিয়ে অটো JWT জেনারেট (সব স্টেপ একসাথে)"""
-    
-    result = {
-        "success": False,
-        "uid": uid,
-        "timestamp": datetime.now().isoformat()
-    }
-    
-    # স্টেপ ১: গেস্ট লগইন
-    print(f"[1/4] গেস্ট লগইন করছি...")
-    guest_result = guest_login(uid, password)
-    
-    if not guest_result["success"]:
-        result["error"] = guest_result["error"]
-        result["step"] = "guest_login"
-        return result
-    
-    result["open_id"] = guest_result["open_id"]
-    result["access_token"] = guest_result["access_token"]
-    print(f"✅ গেস্ট লগইন সফল - Open ID: {guest_result['open_id'][:20]}...")
-    
-    # স্টেপ ২: মেজর লগইন থেকে JWT (সরাসরি)
-    print(f"[2/4] মেজর লগইন থেকে JWT নিচ্ছি...")
-    jwt_result = major_login_jwt(guest_result["open_id"], guest_result["access_token"])
-    
-    if jwt_result["success"]:
-        result["jwt_token"] = jwt_result["jwt_token"]
-        result["method"] = "major_login"
-        result["success"] = True
-        print(f"✅ JWT পাওয়া গেছে (MajorLogin)")
-        return result
-    
-    # স্টেপ ৩: অথোরাইজেশন কোড জেনারেট
-    print(f"[3/4] অথোরাইজেশন কোড জেনারেট করছি...")
-    code_result = get_authorization_code(guest_result["open_id"], guest_result["access_token"])
-    
-    if not code_result["success"]:
-        result["error"] = code_result["error"]
-        result["step"] = "auth_code"
-        return result
-    
-    # স্টেপ ৪: কোড থেকে JWT কনভার্ট
-    print(f"[4/4] কোড থেকে JWT কনভার্ট করছি...")
-    jwt_exchange = exchange_code_for_jwt(code_result["code"])
-    
-    if jwt_exchange["success"]:
-        result["jwt_token"] = jwt_exchange["jwt_token"]
-        result["refresh_token"] = jwt_exchange.get("refresh_token")
-        result["method"] = "code_exchange"
-        result["success"] = True
-        print(f"✅ JWT পাওয়া গেছে (Code Exchange)")
-    else:
-        result["error"] = jwt_exchange["error"]
-        result["step"] = "jwt_exchange"
-    
-    return result
-
-# ==================== ফ্লাস্ক এপিআই এন্ডপয়েন্টস ====================
+    if RESPONSE.status_code == 200:
+        if len(RESPONSE.text) < 10:
+            return False
+        BASE64_TOKEN = RESPONSE.text[RESPONSE.text.find("eyJhbGciOiJIUzI1NiIsInN2ciI6IjEiLCJ0eXAiOiJKV1QifQ"):-1]
+        second_dot_index = BASE64_TOKEN.find(".", BASE64_TOKEN.find(".") + 1)
+        BASE64_TOKEN = BASE64_TOKEN[:second_dot_index + 44]
+        return BASE64_TOKEN
+    return False
 
 @app.route('/', methods=['GET'])
 def home():
     return jsonify({
-        "name": "Auto Free Fire JWT Generator",
-        "version": "5.0",
-        "description": "UID + Password দিয়ে অটো JWT জেনারেট করুন",
-        "features": [
-            "গেস্ট লগইন অটো",
-            "মেজর লগইন অটো",
-            "অথোরাইজেশন কোড অটো",
-            "JWT কনভার্ট অটো"
-        ],
-        "endpoint": "/api/auto-jwt?uid=UID&password=PASSWORD"
+        "name": "Free Fire JWT Token Generator",
+        "version": "2.0",
+        "status": "active",
+        "endpoint": "/get?uid=YOUR_UID&password=YOUR_PASSWORD"
     })
 
-@app.route('/api/auto-jwt', methods=['GET'])
-def auto_jwt():
-    """মেইন এপিআই - UID ও পাসওয়ার্ড দিয়ে অটো JWT"""
-    
-    uid = request.args.get('uid')
-    password = request.args.get('password')
-    
-    if not uid or not password:
-        return jsonify({
-            "success": False,
-            "error": "UID এবং পাসওয়ার্ড উভয়ই প্রয়োজন",
-            "example": "/api/auto-jwt?uid=4099382824&password=your_password",
-            "usage": {
-                "method": "GET",
-                "params": {
-                    "uid": "আপনার ইউজার আইডি",
-                    "password": "আপনার পাসওয়ার্ড"
-                }
-            }
-        }), 400
-    
-    print(f"\n{'='*60}")
-    print(f"🚀 অটো JWT জেনারেশন স্টার্ট")
-    print(f"📱 UID: {uid}")
-    print(f"🔐 পাসওয়ার্ড: {'*' * len(password)}")
-    print(f"{'='*60}\n")
-    
-    # অটো JWT জেনারেট করুন
-    result = auto_jwt_generator(uid, password)
-    
-    if result["success"]:
-        # JWT টোকেন ডিকোড করে দেখান
-        try:
-            parts = result["jwt_token"].split('.')
-            if len(parts) >= 2:
-                payload = parts[1]
-                payload += '=' * ((4 - len(payload) % 4) % 4)
-                decoded = base64.urlsafe_b64decode(payload)
-                result["decoded_payload"] = json.loads(decoded)
-        except:
-            pass
+@app.route('/get', methods=['GET'])
+def check_token():
+    try:
+        uid = request.args.get('uid')
+        password = request.args.get('password')
         
-        result["message"] = "✅ JWT টোকেন সফলভাবে জেনারেট হয়েছে"
-        result["how_to_use"] = {
-            "header": "Authorization: Bearer " + result["jwt_token"][:50] + "...",
-            "example_request": f"curl -H 'Authorization: Bearer {result['jwt_token'][:50]}...' https://clientbp.ggpolarbear.com/SomeEndpoint"
+        if not uid or not password:
+            return jsonify({
+                "status": "error", 
+                "message": "UID and Password required",
+                "example": "/get?uid=4099382824&password=your_password"
+            }), 400
+        
+        url = "https://100067.connect.garena.com/oauth/guest/token/grant"
+        headers = {
+            "Host": "100067.connect.garena.com",
+            "User-Agent": "GarenaMSDK/4.0.19P4(G011A ;Android 9;en;US;)",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "close",
+        }
+        data = {
+            "uid": f"{uid}",
+            "password": f"{password}",
+            "response_type": "token",
+            "client_type": "2",
+            "client_secret": "",
+            "client_id": "100067",
         }
         
-        print(f"✅ সফল! JWT টোকেন জেনারেট হয়েছে")
+        response = requests.post(url, headers=headers, data=data, timeout=15)
         
-    else:
-        result["message"] = "❌ JWT জেনারেট করতে ব্যর্থ হয়েছে"
-        result["troubleshooting"] = [
-            "UID এবং পাসওয়ার্ড সঠিক কিনা চেক করুন",
-            "ইন্টারনেট কানেকশন চেক করুন",
-            "অ্যাকাউন�টি সক্রিয় কিনা যাচাই করুন"
-        ]
-        print(f"❌ ব্যর্থ: {result.get('error', 'Unknown error')}")
-    
-    print(f"{'='*60}\n")
-    
-    return jsonify(result)
+        try:
+            data = response.json()
+        except Exception as e:
+            return jsonify({"status": "error", "message": f"Invalid response from Garena: {response.text[:200]}"})
 
-@app.route('/api/login-only', methods=['GET'])
-def login_only():
-    """শুধু লগইন (টোকেন ছাড়া)"""
-    
-    uid = request.args.get('uid')
-    password = request.args.get('password')
-    
-    if not uid or not password:
-        return jsonify({"error": "UID এবং পাসওয়ার্ড প্রয়োজন"}), 400
-    
-    result = guest_login(uid, password)
-    return jsonify(result)
+        if "access_token" not in data or "open_id" not in data:
+            return jsonify({"status": "error", "message": f"Missing keys in response: {data}"})
 
-@app.route('/api/exchange-code', methods=['POST'])
-def exchange_code():
-    """অথোরাইজেশন কোড থেকে JWT কনভার্ট"""
-    
-    data = request.get_json()
-    code = data.get('code')
-    
-    if not code:
-        return jsonify({"error": "কোড প্রয়োজন"}), 400
-    
-    result = exchange_code_for_jwt(code)
-    return jsonify(result)
+        NEW_ACCESS_TOKEN = data['access_token']
+        NEW_OPEN_ID = data['open_id']
+        OLD_ACCESS_TOKEN = "ff90c07eb9815af30a43b4a9f6019516e0e4c703b44092516d0defa4cef51f2a"
+        OLD_OPEN_ID = "996a629dbcdb3964be6b6978f5d814db"
+        
+        token = TOKEN_MAKER(OLD_ACCESS_TOKEN, NEW_ACCESS_TOKEN, OLD_OPEN_ID, NEW_OPEN_ID, uid)
+        
+        if token:
+            return jsonify({"status": "success", "token": token, "uid": uid})
+        else:
+            return jsonify({"status": "failure", "message": "Failed to generate token"})
+            
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
 
-@app.route('/api/status', methods=['GET'])
-def status():
-    """API স্ট্যাটাস"""
-    return jsonify({
-        "status": "online",
-        "platform": "Vercel",
-        "features": [
-            "guest_login",
-            "major_login", 
-            "auth_code_generation",
-            "jwt_exchange"
-        ],
-        "uptime": "active"
-    })
-
-# ==================== Vercel Handler ====================
+# Vercel handler
 handler = app
-
-if __name__ == '__main__':
-    print("🔥 Auto Free Fire JWT Generator")
-    print("="*50)
-    print("✅ অটো লগইন সিস্টেম রেডি")
-    print("✅ অটো JWT জেনারেশন রেডি")
-    print("✅ অটো কোড এক্সচেঞ্জ রেডি")
-    print("="*50)
-    app.run(host='0.0.0.0', port=5000, debug=True)
